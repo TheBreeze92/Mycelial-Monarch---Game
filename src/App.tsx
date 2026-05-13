@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Dna, 
@@ -1212,12 +1212,10 @@ export default function App() {
   const [syncStreak, setSyncStreak] = useState(0);
   const [syncDecayTimer, setSyncDecayTimer] = useState(0);
   const [lastClickPower, setLastClickPower] = useState(1);
+  const hasAppliedIdleCatchup = useRef(false);
 
   // endgame states
-  const [sessionStartTime, setSessionStartTime] = useState<number | null>(() => {
-    const saved = localStorage.getItem('mm_sessionStartTime');
-    return saved ? Number(saved) : null;
-  });
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [isEgoDissolutionReady, setIsEgoDissolutionReady] = useState(false);
   const [gameState, setGameState] = useState<'menu' | 'playing' | 'dissolving' | 'terminal'>('menu');
   const [hasCompletedBefore, setHasCompletedBefore] = useState(false);
@@ -1234,44 +1232,6 @@ export default function App() {
     if (rot >= 300) return LORE_STAGES[1];
     return LORE_STAGES[0];
   }, [rot, thralls, inventory, isShockActive]);
-
-  // Periodic Save Effect
-  useEffect(() => {
-    const saveTimer = setInterval(() => {
-      localStorage.setItem('mm_rot', rot.toString());
-      localStorage.setItem('mm_thralls', thralls.toString());
-      localStorage.setItem('mm_inventory', JSON.stringify(inventory));
-      localStorage.setItem('mm_isShockActive', isShockActive.toString());
-      localStorage.setItem('mm_achievements', JSON.stringify(achievements));
-      localStorage.setItem('mm_essence', essence.toString());
-      localStorage.setItem('mm_lifetimeEssence', lifetimeEssence.toString());
-      localStorage.setItem('mm_prestigeInventory', JSON.stringify(prestigeInventory));
-      localStorage.setItem('mm_virulenceMultiplier', virulenceMultiplier.toString());
-      if (sessionStartTime) {
-        localStorage.setItem('mm_sessionStartTime', sessionStartTime.toString());
-      }
-    }, 7000); // Save every 7 seconds
-
-    return () => clearInterval(saveTimer);
-  }, [rot, thralls, inventory, isShockActive, achievements, essence, lifetimeEssence, prestigeInventory, virulenceMultiplier, sessionStartTime]);
-
-  useEffect(() => {
-    if (isShockActive) {
-      document.body.classList.add('shock-active');
-    }
-  }, [isShockActive]);
-
-  useEffect(() => {
-    const completed = localStorage.getItem('mycelial_monarch_completed') === 'true';
-    if (completed) {
-      setHasCompletedBefore(true);
-      const val = localStorage.getItem('mycelial_monarch_virulence');
-      if (val) {
-        const v = Math.min(Math.max(parseFloat(val) / 1000000, 1.0), 3.0);
-        setVirulenceMultiplier(v);
-      }
-    }
-  }, []);
 
   // Derived Multipliers
   const prestigeMultipliers = useMemo(() => {
@@ -1311,7 +1271,7 @@ export default function App() {
     });
 
     return { global, click, thrall, auto, thrallGrowth, visualLevel };
-  }, [prestigeInventory]);
+  }, [prestigeInventory, syncStreak, boosts, lifetimeEssence]);
 
   // Derived Stats
   const clickPower = useMemo(() => {
@@ -1346,6 +1306,67 @@ export default function App() {
     
     return base * prestigeMultipliers.global * virulenceMultiplier;
   }, [inventory, isShockActive, thralls, prestigeMultipliers, virulenceMultiplier]);
+
+  const gameStateRef = useRef({ rot, thralls, inventory, isShockActive, achievements, essence, lifetimeEssence, prestigeInventory, virulenceMultiplier, sessionStartTime });
+  useEffect(() => {
+    gameStateRef.current = { rot, thralls, inventory, isShockActive, achievements, essence, lifetimeEssence, prestigeInventory, virulenceMultiplier, sessionStartTime };
+  });
+
+  // Periodic Save Effect
+  useEffect(() => {
+    const saveTimer = setInterval(() => {
+      const s = gameStateRef.current;
+      localStorage.setItem('mm_rot', s.rot.toString());
+      localStorage.setItem('mm_thralls', s.thralls.toString());
+      localStorage.setItem('mm_inventory', JSON.stringify(s.inventory));
+      localStorage.setItem('mm_isShockActive', s.isShockActive.toString());
+      localStorage.setItem('mm_achievements', JSON.stringify(s.achievements));
+      localStorage.setItem('mm_essence', s.essence.toString());
+      localStorage.setItem('mm_lifetimeEssence', s.lifetimeEssence.toString());
+      localStorage.setItem('mm_prestigeInventory', JSON.stringify(s.prestigeInventory));
+      localStorage.setItem('mm_virulenceMultiplier', s.virulenceMultiplier.toString());
+      if (s.sessionStartTime) {
+        localStorage.setItem('mm_sessionStartTime', s.sessionStartTime.toString());
+      }
+      localStorage.setItem('mm_lastSaveTime', Date.now().toString());
+    }, 7000); // Save every 7 seconds
+
+    return () => clearInterval(saveTimer);
+  }, []);
+
+  // Idle Catch-up on Launch
+  useEffect(() => {
+    if (cps > 0 && !hasAppliedIdleCatchup.current) {
+      const lastSave = Number(localStorage.getItem('mm_lastSaveTime')) || 0;
+      if (lastSave > 0) {
+        const secondsAway = (Date.now() - lastSave) / 1000;
+        const earned = secondsAway * cps;
+        if (earned > 0) {
+          setRot(prev => prev + earned);
+          console.log(`Idle Reward: Generated ${Math.floor(earned)} rot while away.`);
+        }
+      }
+      hasAppliedIdleCatchup.current = true;
+    }
+  }, [cps]);
+
+  useEffect(() => {
+    if (isShockActive) {
+      document.body.classList.add('shock-active');
+    }
+  }, [isShockActive]);
+
+  useEffect(() => {
+    const completed = localStorage.getItem('mycelial_monarch_completed') === 'true';
+    if (completed) {
+      setHasCompletedBefore(true);
+      const val = localStorage.getItem('mycelial_monarch_virulence');
+      if (val) {
+        const v = Math.min(Math.max(parseFloat(val) / 1000000, 1.0), 3.0);
+        setVirulenceMultiplier(v);
+      }
+    }
+  }, []);
 
   // Actions
   const decayRate = 0;
@@ -1468,9 +1489,9 @@ export default function App() {
 
   // Game Loop
   useEffect(() => {
-    const ticker = setInterval(() => {
-      if (gameState !== 'playing') return;
+    if (gameState !== 'playing') return;
 
+    const ticker = setInterval(() => {
       setRot(prev => {
         const next = prev + (cps / 10) - (decayRate / 10);
         return Math.max(0, next);
@@ -1543,15 +1564,25 @@ export default function App() {
   // UI Setup
   if (gameState === 'terminal') {
     return (
-      <div className="fixed inset-0 bg-white flex items-center justify-center p-8 transition-opacity duration-[5000ms]">
+      <div className="fixed inset-0 bg-white flex flex-col items-center justify-center p-8 transition-opacity duration-[5000ms]">
         <motion.div 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 10 }}
-          className="text-black text-[12px] uppercase tracking-[1em] font-serif"
+          className="text-black text-[12px] uppercase tracking-[1em] font-serif text-center mb-12"
         >
           Dissolution Complete. You Are Ascended.
         </motion.div>
+
+        <motion.button
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 10, duration: 2 }}
+          onClick={() => window.location.reload()}
+          className="px-12 py-4 border-2 border-black text-black hover:bg-black hover:text-white transition-all text-[10px] font-serif uppercase tracking-widest cursor-pointer"
+        >
+          Restart
+        </motion.button>
       </div>
     );
   }
@@ -1565,13 +1596,6 @@ export default function App() {
             virulence={virulenceMultiplier}
             onStart={() => {
               setGameState('playing');
-              setRot(0);
-              setThralls(0);
-              setInventory({});
-              setIsShockActive(false);
-              setSecretActions({});
-              setBoosts([]);
-              document.body.classList.remove('shock-active');
               setSessionStartTime(Date.now());
             }} 
           />
